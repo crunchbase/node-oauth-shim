@@ -420,6 +420,34 @@ describe('OAuth authenticate', function() {
 	});
 
 
+	it('using redis, should redirect users to the path defined as `state.oauth.auth` with the oauth_token and oauth_callback in 1.0, save token', function(done) {
+
+		query.state.oauth.version = 1;
+
+		var savedToRedis = false;
+		var redisMock = {
+			set: function (o, secret, cb) { savedToRedis = true; },
+			expire: function () {}
+		};
+
+		oauthshim.useRedis(redisMock);
+
+		request(app)
+			.get('/proxy?' + param(query))
+			.expect('Location', new RegExp(query.state.oauth.auth.replace(/\//g, '\\/') + '\\?oauth_token\\=oauth_token\\&oauth_callback\\=' + encodeURIComponent(query.redirect_uri).replace(/\//g, '\\/')))
+			.expect(302)
+			.end(function(err, res) {
+				oauthshim.useRedis(null);
+
+				if (err) throw err;
+
+				if (!savedToRedis) throw new Error('Secret not saved to redis');
+
+				done();
+			});
+	});
+
+
 	it('should return an #error if given a wrong `state.oauth.request`', function(done) {
 
 		query.state.oauth.request = 'http://localhost:' + test_port + '/oauth/brokenrequest';
@@ -653,6 +681,57 @@ describe('OAuth exchange token', function() {
 			}))
 			.expect(302)
 			.end(function(err, res) {
+				if (err) throw err;
+				done();
+			});
+	});
+
+	it('using redis, should return an #error if the oauth_token is wrong', function(done) {
+		var redisMock = {
+			get: function (o, cb) { cb(null, null); }
+		};
+
+		oauthshim.useRedis(redisMock);
+
+		query.oauth_token = 'boom';
+
+		request(app)
+			.get('/proxy?' + param(query))
+			.expect('Location', redirect_uri({
+				error: 'invalid_oauth_token',
+				error_message: '([^&]+)',
+				state: encodeURIComponent(JSON.stringify(query.state))
+			}))
+			.expect(302)
+			.end(function(err, res) {
+				oauthshim.useRedis(null);
+
+				if (err) throw err;
+				done();
+			});
+	});
+
+
+	it('using redis, should return the correctectly if the secret is returned', function(done) {
+		var redisMock = {
+			get: function (o, cb) { cb(null, 'oauth_token_secret'); }
+		};
+
+		oauthshim.useRedis(redisMock);
+
+		query.oauth_token = 'boom';
+
+		request(app)
+			.get('/proxy?' + param(query))
+			.expect('Location', redirect_uri({
+				oauth_token: encodeURIComponent('oauth_token'),
+				oauth_token_secret: encodeURIComponent('oauth_token_secret'),
+				access_token: encodeURIComponent('oauth_token:oauth_token_secret@' + query.client_id)
+			}))
+			.expect(302)
+			.end(function(err, res) {
+				oauthshim.useRedis(null);
+
 				if (err) throw err;
 				done();
 			});
